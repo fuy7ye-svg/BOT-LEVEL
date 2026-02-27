@@ -8,15 +8,9 @@ from threading import Thread
 
 # --- 1. حل مشكلة Render (Flask Server) ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "I am alive!"
-
-def run_flask():
-    # Render يبحث غالباً عن بورت 8080 أو 10000
-    app.run(host='0.0.0.0', port=8080)
-
+def home(): return "Bot is running!"
+def run_flask(): app.run(host='0.0.0.0', port=8080)
 def keep_alive():
     t = Thread(target=run_flask)
     t.start()
@@ -34,7 +28,6 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
 
     async def setup_hook(self):
-        # مزامنة أوامر السلاش
         await self.tree.sync()
         print("✅ Slash Commands Synced")
 
@@ -54,13 +47,30 @@ LEVEL_ROLES = {
     100: 1477037663788863579
 }
 
-# --- 4. الأوامر والفعاليات ---
+# --- 4. دالة تحديث الرتب المحسنة ---
+async def check_roles(member, level):
+    # ترتيب الرتب من الأعلى للأقل
+    for lvl in sorted(LEVEL_ROLES.keys(), reverse=True):
+        if level >= lvl:
+            role_id = LEVEL_ROLES[lvl]
+            role = member.guild.get_role(role_id)
+            if role and role not in member.roles:
+                try:
+                    await member.add_roles(role)
+                    # سحب الرتب القديمة الأقل
+                    for r_lvl, r_id in LEVEL_ROLES.items():
+                        if r_id != role_id:
+                            old_role = member.guild.get_role(r_id)
+                            if old_role in member.roles: await member.remove_roles(old_role)
+                except: pass
+            break
+
+# --- 5. الأوامر والفعاليات ---
 
 @bot.event
 async def on_ready():
-    print(f'✅ Logged in as {bot.user}')
-    if not voice_xp_task.is_running():
-        voice_xp_task.start()
+    print(f'✅ متصل باسم {bot.user}')
+    if not voice_xp_task.is_running(): voice_xp_task.start()
 
 @bot.tree.command(name="setup", description="تحديد روم إشعارات التلفيل")
 @app_commands.checks.has_permissions(administrator=True)
@@ -77,13 +87,14 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     data = cursor.fetchone()
     if data:
         xp, level = data
-        embed = discord.Embed(title=f"📊 الإحصائيات لـ {target.display_name}", color=discord.Color.green())
-        embed.add_field(name="المستوى", value=str(level))
-        embed.add_field(name="النقاط", value=f"{xp}/{level*200}")
+        needed_xp = level * 200
+        embed = discord.Embed(title=f"📊 الإحصائيات لـ {target.display_name}", color=discord.Color.blue())
+        embed.add_field(name="المستوى", value=f"⭐ `{level}`", inline=True)
+        embed.add_field(name="النقاط", value=f"✨ `{xp}/{needed_xp}`", inline=True)
         embed.set_thumbnail(url=target.display_avatar.url)
         await interaction.response.send_message(embed=embed)
     else:
-        await interaction.response.send_message("لا توجد بيانات لك بعد!", ephemeral=True)
+        await interaction.response.send_message("❌ لا توجد بيانات!", ephemeral=True)
 
 @bot.event
 async def on_message(message):
@@ -92,29 +103,30 @@ async def on_message(message):
     uid = message.author.id
     cursor.execute("INSERT OR IGNORE INTO users VALUES (?, 0, 1)", (uid,))
     cursor.execute("UPDATE users SET xp = xp + 10 WHERE user_id = ?", (uid,))
+    conn.commit()
     
     cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (uid,))
     xp, level = cursor.fetchone()
     
-    if xp >= (level * 200):
-        new_lvl = level + 1
-        cursor.execute("UPDATE users SET level = ?, xp = 0 WHERE user_id = ?", (new_lvl, uid))
+    # حلقة لمعالجة النقاط المتراكمة (مثل 2000/400)
+    leveled_up = False
+    while xp >= (level * 200):
+        xp -= (level * 200)
+        level += 1
+        leveled_up = True
+    
+    if leveled_up:
+        cursor.execute("UPDATE users SET level = ?, xp = ? WHERE user_id = ?", (level, xp, uid))
         conn.commit()
         
-        # إرسال التهنئة
         cursor.execute("SELECT channel_id FROM settings WHERE guild_id = ?", (message.guild.id,))
         set_ch = cursor.fetchone()
         channel = bot.get_channel(set_ch[0]) if set_ch else message.channel
         
         if channel:
-            await channel.send(f"🎉 مبروك {message.author.mention} وصلت ليفل {new_lvl}!")
-            # تحديث الرتب (تلقائي)
-            role_id = LEVEL_ROLES.get(new_lvl // 10 * 10) # يجلب رتبة مضاعفات الـ 10
-            if role_id:
-                role = message.guild.get_role(role_id)
-                if role: await message.author.add_roles(role)
-
-    conn.commit()
+            try: await channel.send(f"🎉 كفو {message.author.mention}! ارتقيت للمستوى **{level}**")
+            except: pass
+        await check_roles(message.author, level)
 
 @tasks.loop(minutes=1)
 async def voice_xp_task():
@@ -122,11 +134,20 @@ async def voice_xp_task():
         for vc in guild.voice_channels:
             for member in vc.members:
                 if not member.bot and not member.voice.self_deaf:
-                    cursor.execute("INSERT OR IGNORE INTO users VALUES (?, 0, 1)", (member.id,))
-                    cursor.execute("UPDATE users SET xp = xp + 20 WHERE user_id = ?", (member.id,))
-    conn.commit()
+                    uid = member.id
+                    cursor.execute("INSERT OR IGNORE INTO users VALUES (?, 0, 1)", (uid,))
+                    cursor.execute("UPDATE users SET xp = xp + 20 WHERE user_id = ?", (uid,))
+                    conn.commit()
+                    
+                    cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (uid,))
+                    xp, level = cursor.fetchone()
+                    
+                    if xp >= (level * 200):
+                        # تحديث بسيط لنقاط الصوت
+                        level += 1
+                        cursor.execute("UPDATE users SET level = ?, xp = 0 WHERE user_id = ?", (level, uid))
+                        conn.commit()
+                        await check_roles(member, level)
 
-# --- 5. التشغيل النهائي ---
-if __name__ == "__main__":
-    keep_alive() # تشغيل Flask لحل مشكلة بورت Render
-    bot.run(TOKEN)
+keep_alive()
+if TOKEN: bot.run(TOKEN)
