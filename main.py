@@ -4,7 +4,6 @@ import sqlite3
 import os
 
 # --- الإعدادات الأساسية ---
-# جلب التوكن من إعدادات Render (Environment Variables)
 TOKEN = os.environ.get('DISCORD_TOKEN')
 
 intents = discord.Intents.default()
@@ -15,7 +14,7 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- قاموس الرتب (استبدل الأصفار بآيديات الرتب من سيرفرك) ---
+# --- قاموس الرتب (تم إصلاح التنسيق والفواصل) ---
 LEVEL_ROLES = {
     10: 1477037250708766944,
     20: 1477037367067021432,
@@ -30,7 +29,6 @@ LEVEL_ROLES = {
 }
 
 # --- إعداد قاعدة البيانات ---
-# ملاحظة: في Render، إذا لم تستخدم Database خارجية، البيانات ستُحذف عند إعادة التشغيل
 conn = sqlite3.connect('levels.db')
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS users 
@@ -38,29 +36,33 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users
 conn.commit()
 
 async def update_member_roles(member, level):
-    """تحديث رتبة العضو بناءً على ليفله"""
+    """دالة فحص وإعطاء الرتبة المناسبة وسحب الرتب الأقل منها"""
     if not member or not hasattr(member, 'add_roles'): return
     
     eligible_role_id = None
+    # تحديد أعلى رتبة يستحقها العضو بناءً على مستواه
     for lvl in sorted(LEVEL_ROLES.keys(), reverse=True):
         if level >= lvl:
             eligible_role_id = LEVEL_ROLES[lvl]
             break
             
-    if eligible_role_id and eligible_role_id != 0:
+    if eligible_role_id:
         new_role = member.guild.get_role(eligible_role_id)
         if new_role and new_role not in member.roles:
-            await member.add_roles(new_role)
-            # تنظيف الرتب القديمة
-            for lvl, rid in LEVEL_ROLES.items():
-                if rid != eligible_role_id and rid != 0:
-                    old_role = member.guild.get_role(rid)
-                    if old_role and old_role in member.roles:
-                        await member.remove_roles(old_role)
+            try:
+                await member.add_roles(new_role)
+                # سحب رتب اللفلات الأخرى لضمان نظافة الرتب
+                for lvl, rid in LEVEL_ROLES.items():
+                    if rid != eligible_role_id:
+                        old_role = member.guild.get_role(rid)
+                        if old_role and old_role in member.roles:
+                            await member.remove_roles(old_role)
+            except Exception as e:
+                print(f"خطأ في إعطاء الرتبة: {e}")
 
 @bot.event
 async def on_ready():
-    print(f'✅ البوت متصل الآن: {bot.user}')
+    print(f'✅ تم تسجيل الدخول باسم: {bot.user}')
     if not voice_xp_task.is_running():
         voice_xp_task.start()
 
@@ -70,18 +72,20 @@ async def on_message(message):
     
     user_id = message.author.id
     cursor.execute("INSERT OR IGNORE INTO users VALUES (?, 0, 1)", (user_id,))
+    
+    # زيادة 10 نقاط لكل رسالة
     cursor.execute("UPDATE users SET xp = xp + 10 WHERE user_id = ?", (user_id,))
     
     cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (user_id,))
     xp, level = cursor.fetchone()
     
-    # معادلة التلفيل: كل ليفل يحتاج 200 نقطة
+    # معادلة التلفيل: كل ليفل يحتاج (المستوى الحالي × 200) نقطة
     if xp >= (level * 200):
         new_level = level + 1
         cursor.execute("UPDATE users SET level = ?, xp = 0 WHERE user_id = ?", (new_level, user_id))
         conn.commit()
         try:
-            await message.channel.send(f"🎉 مبروك {message.author.mention}! وصلت للمستوى **{new_level}**")
+            await message.channel.send(f"🎉 كفو {message.author.mention}! ارتقيت للمستوى **{new_level}**")
             await update_member_roles(message.author, new_level)
         except: pass
     
@@ -90,7 +94,7 @@ async def on_message(message):
 
 @tasks.loop(minutes=1)
 async def voice_xp_task():
-    """زيادة نقاط المتواجدين في الصوت كل دقيقة"""
+    """توزيع نقاط للمتواجدين في الرومات الصوتية (كل دقيقة)"""
     for guild in bot.guilds:
         for vc in guild.voice_channels:
             for member in vc.members:
@@ -111,7 +115,7 @@ async def voice_xp_task():
 
 @bot.command()
 async def rank(ctx, member: discord.Member = None):
-    """أمر معرفة المستوى"""
+    """عرض رتبة العضو ونقاطه"""
     member = member or ctx.author
     cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (member.id,))
     data = cursor.fetchone()
@@ -119,10 +123,10 @@ async def rank(ctx, member: discord.Member = None):
         xp, level = data
         await ctx.send(f"📊 **{member.display_name}**\n⭐ المستوى: `{level}`\n✨ النقاط: `{xp}/{level*200}`")
     else:
-        await ctx.send("لا توجد بيانات حالياً.")
+        await ctx.send("لا توجد بيانات مسجلة لك بعد.")
 
-# التشغيل
+# تشغيل البوت
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("❌ خطأ: لم يتم ضبط DISCORD_TOKEN في إعدادات Render")
+    print("❌ خطأ: لم يتم العثور على DISCORD_TOKEN في المتغيرات البيئية.")
