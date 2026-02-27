@@ -6,7 +6,7 @@ import os
 from flask import Flask
 from threading import Thread
 
-# --- 1. حل مشكلة Render (Flask Server) ---
+# --- 1. حل مشكلة Render (سيرفر Flask) ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is running!"
@@ -15,7 +15,7 @@ def keep_alive():
     t = Thread(target=run_flask)
     t.start()
 
-# --- 2. إعداد البوت ---
+# --- 2. إعدادات البوت ---
 TOKEN = os.environ.get('DISCORD_TOKEN')
 
 class MyBot(commands.Bot):
@@ -29,7 +29,7 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print("✅ Slash Commands Synced")
+        print("✅ تم مزامنة أوامر السلاش")
 
 bot = MyBot()
 
@@ -47,9 +47,8 @@ LEVEL_ROLES = {
     100: 1477037663788863579
 }
 
-# --- 4. دالة تحديث الرتب المحسنة ---
+# --- 4. دالة التحقق من الرتب ---
 async def check_roles(member, level):
-    # ترتيب الرتب من الأعلى للأقل
     for lvl in sorted(LEVEL_ROLES.keys(), reverse=True):
         if level >= lvl:
             role_id = LEVEL_ROLES[lvl]
@@ -57,8 +56,8 @@ async def check_roles(member, level):
             if role and role not in member.roles:
                 try:
                     await member.add_roles(role)
-                    # سحب الرتب القديمة الأقل
-                    for r_lvl, r_id in LEVEL_ROLES.items():
+                    # سحب الرتب القديمة
+                    for r_id in LEVEL_ROLES.values():
                         if r_id != role_id:
                             old_role = member.guild.get_role(r_id)
                             if old_role in member.roles: await member.remove_roles(old_role)
@@ -66,10 +65,9 @@ async def check_roles(member, level):
             break
 
 # --- 5. الأوامر والفعاليات ---
-
 @bot.event
 async def on_ready():
-    print(f'✅ متصل باسم {bot.user}')
+    print(f'✅ سجل الدخول باسم {bot.user}')
     if not voice_xp_task.is_running(): voice_xp_task.start()
 
 @bot.tree.command(name="setup", description="تحديد روم إشعارات التلفيل")
@@ -108,9 +106,9 @@ async def on_message(message):
     cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (uid,))
     xp, level = cursor.fetchone()
     
-    # حلقة لمعالجة النقاط المتراكمة (مثل 2000/400)
+    # تصحيح المستوى بناءً على النقاط المتراكمة (مثل 2220/400)
     leveled_up = False
-    while xp >= (level * 200):
+    while xp >= (level * 200): # حلقة تكرارية لرفع المستويات المتعددة
         xp -= (level * 200)
         level += 1
         leveled_up = True
@@ -138,16 +136,8 @@ async def voice_xp_task():
                     cursor.execute("INSERT OR IGNORE INTO users VALUES (?, 0, 1)", (uid,))
                     cursor.execute("UPDATE users SET xp = xp + 20 WHERE user_id = ?", (uid,))
                     conn.commit()
-                    
-                    cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (uid,))
-                    xp, level = cursor.fetchone()
-                    
-                    if xp >= (level * 200):
-                        # تحديث بسيط لنقاط الصوت
-                        level += 1
-                        cursor.execute("UPDATE users SET level = ?, xp = 0 WHERE user_id = ?", (level, uid))
-                        conn.commit()
-                        await check_roles(member, level)
+                    # سيتم تصحيح المستوى عند أول رسالة يرسلها العضو بفضل نظام while في on_message
+    conn.commit()
 
 keep_alive()
 if TOKEN: bot.run(TOKEN)
